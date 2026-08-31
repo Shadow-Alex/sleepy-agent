@@ -1,0 +1,4 @@
+interface:
+  display_name: "Durable Continue"
+  short_description: "Stop polling and continue this task when work changes"
+  default_prompt: "Use $durable-continue after an already-started task is stable and only waiting remains; register one read-only checker with regexes and a hard timeout, then end the current turn."
