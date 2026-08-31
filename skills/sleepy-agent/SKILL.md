@@ -1,10 +1,10 @@
 ---
-name: durable-continue
+name: sleepy-agent
 description: Use after an already-started local or remote task will outlive the active Codex turn and progress is blocked only on waiting. Register one cheap read-only checker, regex conditions, and a hard timeout; then stop polling. The same Codex task will later receive the exact user message `continue`.
 license: MIT
 ---
 
-# Durable Continue
+# Sleepy Agent
 
 Use this only after the long-running task has survived a bounded startup guard.
 

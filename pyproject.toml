@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "durable-continue"
-version = "0.1.0"
-description = "Durably observe a long-running task and queue `continue` to its Codex thread."
+version = "0.2.0"
+description = "Local runtime for Sleepy Agent's durable same-task continuation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{name = "durable-continue"}]
+authors = [{name = "Sleepy Agent contributors"}]
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Shadow-Alex/durable-continue"
-Repository = "https://github.com/Shadow-Alex/durable-continue"
-Issues = "https://github.com/Shadow-Alex/durable-continue/issues"
+Homepage = "https://github.com/Shadow-Alex/sleepy-agent"
+Repository = "https://github.com/Shadow-Alex/sleepy-agent"
+Issues = "https://github.com/Shadow-Alex/sleepy-agent/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

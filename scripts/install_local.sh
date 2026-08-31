@@ -5,7 +5,10 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_ROOT="${DURABLE_CONTINUE_HOME:-${HOME}/.codex/durable-continue}"
 INSTALL_SOURCE="${STATE_ROOT}/source"
 VENV="${STATE_ROOT}/venv"
-SKILL_DIR="${HOME}/.codex/skills/durable-continue"
+SKILL_DIR="${HOME}/.codex/skills/sleepy-agent"
+LEGACY_SKILL_DIR="${HOME}/.codex/skills/durable-continue"
+LEGACY_SKILL_SHA256="5bfcfa6d4405952c68da163ee3c258c6afcb91e9fbed4122dfbe01f9d36cf784"
+LEGACY_AGENT_SHA256="22de2506be5afff2938cc21c97b992c1ada77b70cdf7e1487d912755efe67689"
 BIN_DIR="${HOME}/.local/bin"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST="${PLIST_DIR}/io.github.shadow-alex.durable-continue.plist"
@@ -43,8 +46,20 @@ exec "${VENV}/bin/python" -m durable_continue.cli "\$@"
 WRAPPER
 chmod 755 "${BIN_DIR}/durable-continue"
 
-install -m 644 "${INSTALL_SOURCE}/skills/durable-continue/SKILL.md" "${SKILL_DIR}/SKILL.md"
-install -m 644 "${INSTALL_SOURCE}/skills/durable-continue/agents/openai.yaml" "${SKILL_DIR}/agents/openai.yaml"
+install -m 644 "${INSTALL_SOURCE}/skills/sleepy-agent/SKILL.md" "${SKILL_DIR}/SKILL.md"
+install -m 644 "${INSTALL_SOURCE}/skills/sleepy-agent/agents/openai.yaml" "${SKILL_DIR}/agents/openai.yaml"
+
+# Remove only the exact v0.1.0 public Skill files after the renamed Skill is
+# installed. Any modified or additional legacy content is left untouched.
+if [[ -f "${LEGACY_SKILL_DIR}/SKILL.md" && -f "${LEGACY_SKILL_DIR}/agents/openai.yaml" ]]; then
+  legacy_skill_sha="$(shasum -a 256 "${LEGACY_SKILL_DIR}/SKILL.md" | awk '{print $1}')"
+  legacy_agent_sha="$(shasum -a 256 "${LEGACY_SKILL_DIR}/agents/openai.yaml" | awk '{print $1}')"
+  if [[ "${legacy_skill_sha}" == "${LEGACY_SKILL_SHA256}" && "${legacy_agent_sha}" == "${LEGACY_AGENT_SHA256}" ]]; then
+    rm -f -- "${LEGACY_SKILL_DIR}/SKILL.md" "${LEGACY_SKILL_DIR}/agents/openai.yaml"
+    rmdir "${LEGACY_SKILL_DIR}/agents" "${LEGACY_SKILL_DIR}" 2>/dev/null || true
+    echo "removed legacy v0.1.0 Skill name: ${LEGACY_SKILL_DIR}"
+  fi
+fi
 
 "${PYTHON_BIN}" - \
   "${INSTALL_SOURCE}/launchd/io.github.shadow-alex.durable-continue.plist.in" \

@@ -4,7 +4,7 @@ set -euo pipefail
 STATE_ROOT="${DURABLE_CONTINUE_HOME:-${HOME}/.codex/durable-continue}"
 PLIST="${HOME}/Library/LaunchAgents/io.github.shadow-alex.durable-continue.plist"
 CLI="${HOME}/.local/bin/durable-continue"
-SKILL_DIR="${HOME}/.codex/skills/durable-continue"
+SKILL_DIR="${HOME}/.codex/skills/sleepy-agent"
 
 launchctl bootout "gui/${UID}" "${PLIST}" >/dev/null 2>&1 \
   || launchctl bootout "gui/${UID}/io.github.shadow-alex.durable-continue" >/dev/null 2>&1 \

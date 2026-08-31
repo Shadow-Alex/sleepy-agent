@@ -30,3 +30,14 @@ def test_launchd_template_is_complete() -> None:
         "__SOURCE_DIR__",
     ):
         assert placeholder in text
+
+
+def test_sleepy_agent_release_layout() -> None:
+    skill = ROOT / "skills/sleepy-agent/SKILL.md"
+    assert skill.is_file()
+    assert "name: sleepy-agent" in skill.read_text()
+    assert not (ROOT / "skills/durable-continue").exists()
+
+    readme = (ROOT / "README.md").read_text()
+    assert "assets/sleepy-agent-demo.png" in readme
+    assert "Injected message: continue" in readme
