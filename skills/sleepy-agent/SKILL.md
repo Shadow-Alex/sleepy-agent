@@ -1,6 +1,6 @@
 ---
 name: sleepy-agent
-description: Use after an already-started local or remote task will outlive the active Codex turn and progress is blocked only on waiting. Register one cheap read-only checker, regex conditions, and a hard timeout; then stop polling. The same Codex task will later receive the exact user message `continue`.
+description: Use on macOS Codex Desktop after an already-started local or remote task will outlive the active turn and progress is blocked only on waiting. Register one cheap read-only checker, regex conditions, and a hard timeout; then stop polling. The same task later receives the exact user message `continue` through the Desktop-owned dispatcher. Requires the full Sleepy Agent runtime; a skill-only install cannot deliver.
 license: MIT
 ---
 
@@ -27,4 +27,4 @@ durable-continue register \
 7. Do not create or fork another task.
 8. The original task will later receive the exact user message `continue`.
 
-The checker must not mutate, retry, or resubmit the long-running task. A job ID is not required.
+The checker must not mutate, retry, or resubmit the long-running task. A job ID is not required. Delivery is performed only by the dispatcher process launched inside Codex Desktop; never start a separate Codex server or automate the Desktop UI. If `durable-continue` is unavailable or registration reports that Desktop delivery is unavailable, stop and explain that the full repository installer is required.

@@ -9,12 +9,16 @@ SKILL_DIR="${HOME}/.codex/skills/sleepy-agent"
 LEGACY_SKILL_DIR="${HOME}/.codex/skills/durable-continue"
 LEGACY_SKILL_SHA256="5bfcfa6d4405952c68da163ee3c258c6afcb91e9fbed4122dfbe01f9d36cf784"
 LEGACY_AGENT_SHA256="22de2506be5afff2938cc21c97b992c1ada77b70cdf7e1487d912755efe67689"
+PLUGIN_DIR="${HOME}/plugins/sleepy-agent"
+MARKETPLACE_FILE="${HOME}/.agents/plugins/marketplace.json"
 BIN_DIR="${HOME}/.local/bin"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST="${PLIST_DIR}/io.github.shadow-alex.durable-continue.plist"
 LOG_DIR="${STATE_ROOT}/logs"
 CODEX_HOME_VALUE="${CODEX_HOME:-${HOME}/.codex}"
 PYTHON_BIN="${DURABLE_CONTINUE_PYTHON:-$(command -v python3)}"
+CODEX_BIN="${DURABLE_CONTINUE_CODEX:-$(command -v codex)}"
+PLUGIN_CREATOR_SCRIPTS="${CODEX_HOME_VALUE}/skills/.system/plugin-creator/scripts"
 
 "${PYTHON_BIN}" - <<'PY'
 import sys
@@ -22,15 +26,66 @@ if sys.version_info < (3, 10):
     raise SystemExit(f"durable-continue requires Python 3.10+, found {sys.version.split()[0]}")
 PY
 
+launchctl bootout "gui/${UID}" "${PLIST}" >/dev/null 2>&1 \
+  || launchctl bootout "gui/${UID}/io.github.shadow-alex.durable-continue" >/dev/null 2>&1 \
+  || true
+for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if ! launchctl print "gui/${UID}/io.github.shadow-alex.durable-continue" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ ! -f "${PLUGIN_CREATOR_SCRIPTS}/create_basic_plugin.py" ]] \
+  || [[ ! -f "${PLUGIN_CREATOR_SCRIPTS}/read_marketplace_name.py" ]] \
+  || [[ ! -f "${PLUGIN_CREATOR_SCRIPTS}/update_plugin_cachebuster.py" ]]; then
+  echo "missing Codex plugin-creator helpers under ${PLUGIN_CREATOR_SCRIPTS}" >&2
+  exit 2
+fi
+
+needs_marketplace_entry="$("${PYTHON_BIN}" - "${MARKETPLACE_FILE}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("yes")
+else:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("plugins", []) if isinstance(payload, dict) else []
+    found = any(
+        isinstance(item, dict) and item.get("name") == "sleepy-agent"
+        for item in entries
+    )
+    print("no" if found else "yes")
+PY
+)"
 mkdir -p "${STATE_ROOT}" "${INSTALL_SOURCE}" "${SKILL_DIR}/agents" \
-  "${BIN_DIR}" "${PLIST_DIR}" "${LOG_DIR}"
+  "${PLUGIN_DIR}" "${BIN_DIR}" "${PLIST_DIR}" "${LOG_DIR}"
 chmod 700 "${STATE_ROOT}" "${LOG_DIR}"
 
-rsync -a --delete \
-  --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
-  --exclude '.pytest_cache' --exclude '.ruff_cache' \
-  --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
-  "${SOURCE_DIR}/" "${INSTALL_SOURCE}/"
+if [[ "${SOURCE_DIR}" != "${INSTALL_SOURCE}" ]]; then
+  rsync -a --delete \
+    --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
+    --exclude '.pytest_cache' --exclude '.ruff_cache' \
+    --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+    "${SOURCE_DIR}/" "${INSTALL_SOURCE}/"
+fi
+
+if [[ "${needs_marketplace_entry}" == "yes" ]]; then
+  "${PYTHON_BIN}" "${PLUGIN_CREATOR_SCRIPTS}/create_basic_plugin.py" \
+    sleepy-agent --with-marketplace --with-mcp --with-skills --with-scripts \
+    --force
+fi
+
+if [[ "${INSTALL_SOURCE}" != "${PLUGIN_DIR}" ]]; then
+  rsync -a --delete \
+    --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
+    --exclude '.pytest_cache' --exclude '.ruff_cache' \
+    --exclude 'build' --exclude 'dist' --exclude '*.egg-info' \
+    "${INSTALL_SOURCE}/" "${PLUGIN_DIR}/"
+fi
 
 "${PYTHON_BIN}" -m venv "${VENV}"
 SITE_PACKAGES="$("${VENV}/bin/python" - <<'PY'
@@ -61,6 +116,18 @@ if [[ -f "${LEGACY_SKILL_DIR}/SKILL.md" && -f "${LEGACY_SKILL_DIR}/agents/openai
   fi
 fi
 
+marketplace_name="$(
+  "${PYTHON_BIN}" "${PLUGIN_CREATOR_SCRIPTS}/read_marketplace_name.py" \
+    --marketplace-path "${MARKETPLACE_FILE}"
+)"
+"${PYTHON_BIN}" "${PLUGIN_CREATOR_SCRIPTS}/update_plugin_cachebuster.py" \
+  "${PLUGIN_DIR}"
+"${CODEX_BIN}" plugin add "sleepy-agent@${marketplace_name}" --json
+
+# Opening the Store here performs the transactional schema migration while the
+# old LaunchAgent is still stopped.
+"${BIN_DIR}/durable-continue" doctor
+
 "${PYTHON_BIN}" - \
   "${INSTALL_SOURCE}/launchd/io.github.shadow-alex.durable-continue.plist.in" \
   "${PLIST}" "${VENV}/bin/python" "${HOME}" "${CODEX_HOME_VALUE}" \
@@ -88,15 +155,6 @@ Path(dst).write_text(text, encoding="utf-8")
 PY
 
 plutil -lint "${PLIST}"
-launchctl bootout "gui/${UID}" "${PLIST}" >/dev/null 2>&1 \
-  || launchctl bootout "gui/${UID}/io.github.shadow-alex.durable-continue" >/dev/null 2>&1 \
-  || true
-for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if ! launchctl print "gui/${UID}/io.github.shadow-alex.durable-continue" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.1
-done
 
 loaded=false
 for _attempt in 1 2 3 4 5; do
@@ -114,7 +172,9 @@ launchctl kickstart -k "gui/${UID}/io.github.shadow-alex.durable-continue"
 
 echo "installed CLI: ${BIN_DIR}/durable-continue"
 echo "installed skill: ${SKILL_DIR}"
+echo "installed Desktop plugin: ${PLUGIN_DIR}"
+echo "plugin marketplace: ${marketplace_name}"
 echo "installed source: ${INSTALL_SOURCE}"
 echo "state root: ${STATE_ROOT}"
 echo "LaunchAgent: ${PLIST}"
-"${BIN_DIR}/durable-continue" doctor
+echo "start a new Codex task once so Desktop loads the dispatcher plugin"

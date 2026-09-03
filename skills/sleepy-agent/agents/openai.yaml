@@ -1,4 +1,4 @@
 interface:
   display_name: "Sleepy Agent"
   short_description: "Let Codex sleep through long waits, then continue"
-  default_prompt: "Use $sleepy-agent after an already-started task is stable and only waiting remains; register one read-only checker with regexes and a hard timeout, then end the current turn."
+  default_prompt: "Use $sleepy-agent after an already-started task is stable and only waiting remains; register one read-only checker with regexes and a hard timeout, then let the Desktop-owned dispatcher continue this task."

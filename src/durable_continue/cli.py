@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
-import subprocess
 import sys
 import uuid
 from collections.abc import Sequence
@@ -11,16 +10,20 @@ from pathlib import Path
 
 from .checker import compile_regex
 from .daemon import DurableContinueDaemon
+from .delivery_evidence import DeliveryEvidenceError
+from .dispatcher_state import (
+    claim_dispatch,
+    observe_dispatch,
+    record_dispatch_failure,
+)
 from .durations import parse_duration
-from .queue_delivery import queue_supported, resolve_codex_bin
-from .queue_worker import run_queue_worker
+from .plugin_runtime import DESKTOP_BACKEND, active_dispatchers, dispatcher_supported
 from .store import Store
 from .util import (
     codex_home_from_environment,
     database_path,
     iso_utc,
     json_print,
-    tail_text,
 )
 
 
@@ -59,7 +62,6 @@ def _parser() -> argparse.ArgumentParser:
     register.add_argument("--interval", default="10m")
     register.add_argument("--check-timeout", default="60s", help=argparse.SUPPRESS)
     register.add_argument("--thread-id", help=argparse.SUPPRESS)
-    register.add_argument("--codex-bin", help=argparse.SUPPRESS)
     register.add_argument("--codex-home", help=argparse.SUPPRESS)
 
     status = sub.add_parser("status", help="show one monitor")
@@ -67,30 +69,38 @@ def _parser() -> argparse.ArgumentParser:
 
     list_cmd = sub.add_parser("list", help="list monitors")
     list_cmd.add_argument(
-        "--active", action="store_true", help="exclude queued and cancelled records"
+        "--active", action="store_true", help="exclude terminal records"
     )
 
-    cancel = sub.add_parser("cancel", help="cancel future checks and queue attempts")
+    cancel = sub.add_parser("cancel", help="cancel future checks and delivery attempts")
     cancel.add_argument("monitor_id")
 
     doctor = sub.add_parser(
-        "doctor", help="inspect local state and Codex queue support"
+        "doctor", help="inspect local state and Codex Desktop delivery support"
     )
-    doctor.add_argument("--codex-bin", help=argparse.SUPPRESS)
     doctor.add_argument("--codex-home", help=argparse.SUPPRESS)
 
     daemon = sub.add_parser("daemon", help=argparse.SUPPRESS)
     daemon.add_argument("--once", action="store_true")
     daemon.add_argument("--tick-seconds", type=int, default=15)
-    daemon.add_argument("--queue-retry-seconds", type=int, default=60)
-    daemon.add_argument("--delivery-timeout", type=int, default=60)
 
-    worker = sub.add_parser("_queue-worker", help=argparse.SUPPRESS)
-    worker.add_argument("monitor_id")
-    worker.add_argument("--claim-token", required=True)
-    worker.add_argument("--retry-seconds", type=int, default=60)
-    worker.add_argument("--delivery-timeout", type=int, default=60)
-    worker.add_argument("--db", type=Path, default=None)
+    claim = sub.add_parser("_dispatcher-claim", help=argparse.SUPPRESS)
+    _add_dispatch_retry_arguments(claim)
+    claim.add_argument("--claim-seconds", type=int, default=180)
+
+    observe = sub.add_parser("_dispatcher-observe", help=argparse.SUPPRESS)
+    observe.add_argument("monitor_id")
+    observe.add_argument("--claim-token", required=True)
+    observe.add_argument("--wait-seconds", type=float, default=0)
+    _add_dispatch_retry_arguments(observe)
+
+    fail = sub.add_parser("_dispatcher-fail", help=argparse.SUPPRESS)
+    fail.add_argument("monitor_id")
+    fail.add_argument("--claim-token", required=True)
+    fail.add_argument("--error", required=True)
+    fail.add_argument("--reason", default="native_pipe_error")
+    fail.add_argument("--permanent", action="store_true")
+    _add_dispatch_retry_arguments(fail)
 
     return parser
 
@@ -106,15 +116,40 @@ def _public_summary(record: dict[str, object]) -> dict[str, object]:
         if record.get("next_check_at")
         else None,
         "deadline_at": iso_utc(float(record["deadline_at"])),
-        "next_queue_at": iso_utc(float(record["next_queue_at"]))
-        if record.get("next_queue_at")
+        "next_delivery_at": iso_utc(float(record["next_delivery_at"]))
+        if record.get("next_delivery_at")
         else None,
-        "queued_submission_id": record.get("queued_submission_id"),
-        "queued_at": iso_utc(float(record["queued_at"]))
-        if record.get("queued_at")
+        "delivery_phase": _delivery_phase(record),
+        "client_user_message_id": record.get("client_user_message_id"),
+        "delivery_backend": record.get("delivery_backend"),
+        "delivery_started_at": iso_utc(float(record["delivery_started_at"]))
+        if record.get("delivery_started_at")
         else None,
+        "delivery_rollout_path": record.get("delivery_rollout_path"),
+        "started_turn_id": record.get("started_turn_id"),
+        "started_at": iso_utc(float(record["started_at"]))
+        if record.get("started_at")
+        else None,
+        "delivery_blocked_at": iso_utc(float(record["delivery_blocked_at"]))
+        if record.get("delivery_blocked_at")
+        else None,
+        "delivery_blocked_reason": record.get("delivery_blocked_reason"),
         "last_error": record.get("last_error"),
     }
+
+
+def _delivery_phase(record: dict[str, object]) -> str:
+    if record.get("started_turn_id"):
+        return "started"
+    if record.get("delivery_blocked_at"):
+        return "blocked"
+    if record.get("state") == "CANCELLED":
+        return "cancelled"
+    if record.get("delivery_started_at"):
+        return "submitting"
+    if record.get("state") in {"DELIVERY_PENDING", "DELIVERING"}:
+        return "pending"
+    return "not_started"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -137,17 +172,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             compile_regex(args.success_regex, required=True)
             compile_regex(args.failure_regex)
             codex_home = _absolute_codex_home(args.codex_home)
-            codex_bin = resolve_codex_bin(args.codex_bin)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         if not args.check_command.strip():
             print("error: --check must not be empty", file=sys.stderr)
             return 2
-        supported, detail = queue_supported(codex_bin, codex_home=codex_home)
+        supported, detail = dispatcher_supported()
         if not supported:
             print(
-                f"error: {codex_bin} does not provide a usable `codex queue` command: {detail}",
+                f"error: Codex Desktop delivery is unavailable: {detail}",
                 file=sys.stderr,
             )
             return 2
@@ -161,7 +195,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=timeout_seconds,
             check_timeout_seconds=check_timeout_seconds,
             codex_home=codex_home,
-            codex_bin=codex_bin,
         )
         json_print(_public_summary(record))
         return 0
@@ -171,7 +204,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if record is None:
             print(f"error: monitor not found: {args.monitor_id}", file=sys.stderr)
             return 1
-        json_print(store.public_record(record))
+        payload = store.public_record(record)
+        payload["delivery_phase"] = _delivery_phase(record)
+        json_print(payload)
         return 0
 
     if args.command == "list":
@@ -194,15 +229,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctor":
         codex_home = _absolute_codex_home(args.codex_home)
-        try:
-            codex_bin = resolve_codex_bin(args.codex_bin)
-            supported, queue_detail = queue_supported(codex_bin, codex_home=codex_home)
-            version = _codex_version(codex_bin, codex_home)
-        except ValueError as exc:
-            codex_bin = None
-            supported = False
-            queue_detail = str(exc)
-            version = None
+        supported, delivery_detail = dispatcher_supported()
+        dispatchers = active_dispatchers()
         thread_id = os.environ.get("CODEX_THREAD_ID")
         thread_valid = False
         if thread_id:
@@ -214,11 +242,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = {
             "database": str(store.path),
             "database_exists": store.path.exists(),
-            "codex_bin": codex_bin,
             "codex_home": codex_home,
-            "codex_version": version,
-            "codex_queue_supported": supported,
-            "codex_queue_detail": queue_detail,
+            "delivery_backend": DESKTOP_BACKEND,
+            "desktop_delivery_supported": supported,
+            "desktop_delivery_detail": delivery_detail,
+            "desktop_dispatcher_loaded": bool(dispatchers),
+            "desktop_dispatchers": dispatchers,
             "CODEX_THREAD_ID_present": bool(thread_id),
             "CODEX_THREAD_ID_valid": thread_valid,
         }
@@ -229,8 +258,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         daemon = DurableContinueDaemon(
             store=store,
             tick_seconds=args.tick_seconds,
-            queue_retry_seconds=args.queue_retry_seconds,
-            delivery_timeout_seconds=args.delivery_timeout,
         )
         if args.once:
             json_print(daemon.run_once())
@@ -238,35 +265,67 @@ def main(argv: Sequence[str] | None = None) -> int:
         daemon.run_forever()
         return 0
 
-    if args.command == "_queue-worker":
-        return run_queue_worker(
+    if args.command == "_dispatcher-claim":
+        claim = claim_dispatch(
+            store,
+            claim_seconds=args.claim_seconds,
+            retry_seconds=args.retry_seconds,
+            max_delivery_attempts=args.max_delivery_attempts,
+            max_retry_seconds=args.max_retry_seconds,
+        )
+        json_print({"claim": claim.as_dict() if claim is not None else None})
+        return 0
+
+    if args.command == "_dispatcher-observe":
+        try:
+            payload = observe_dispatch(
+                store,
+                args.monitor_id,
+                args.claim_token,
+                wait_seconds=args.wait_seconds,
+            )
+        except DeliveryEvidenceError as exc:
+            record_dispatch_failure(
+                store,
+                args.monitor_id,
+                args.claim_token,
+                error=f"{exc.stage}: {exc}",
+                retryable=exc.retryable,
+                reason=exc.category,
+                retry_seconds=args.retry_seconds,
+                max_delivery_attempts=args.max_delivery_attempts,
+                max_retry_seconds=args.max_retry_seconds,
+            )
+            payload = {
+                "observed": False,
+                "stale": False,
+                "error": f"{exc.stage}: {exc}",
+            }
+        json_print(payload)
+        return 0
+
+    if args.command == "_dispatcher-fail":
+        changed = record_dispatch_failure(
+            store,
             args.monitor_id,
             args.claim_token,
-            db_path=args.db,
+            error=args.error[:2_000],
+            retryable=not args.permanent,
+            reason=args.reason,
             retry_seconds=args.retry_seconds,
-            delivery_timeout_seconds=args.delivery_timeout,
+            max_delivery_attempts=args.max_delivery_attempts,
+            max_retry_seconds=args.max_retry_seconds,
         )
+        json_print({"recorded": changed})
+        return 0 if changed else 1
 
     return 2
 
 
-def _codex_version(codex_bin: str, codex_home: str) -> str | None:
-    env = os.environ.copy()
-    env["CODEX_HOME"] = codex_home
-    try:
-        proc = subprocess.run(
-            [codex_bin, "--version"],
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    return tail_text(proc.stdout.strip(), 1_000)
+def _add_dispatch_retry_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--retry-seconds", type=int, default=60)
+    parser.add_argument("--max-delivery-attempts", type=int, default=12)
+    parser.add_argument("--max-retry-seconds", type=int, default=3600)
 
 
 if __name__ == "__main__":

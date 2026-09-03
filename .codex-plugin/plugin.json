@@ -1,0 +1,38 @@
+{
+  "name": "sleepy-agent",
+  "version": "0.4.0",
+  "description": "Durable same-task continuation through Codex Desktop's own App Server",
+  "author": {
+    "name": "Shadow-Alex",
+    "url": "https://github.com/Shadow-Alex"
+  },
+  "homepage": "https://github.com/Shadow-Alex/sleepy-agent",
+  "repository": "https://github.com/Shadow-Alex/sleepy-agent",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "long-running-tasks",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sleepy Agent",
+    "shortDescription": "Sleep through long waits, then continue.",
+    "longDescription": "Runs a read-only background checker and lets Codex Desktop's own App Server deliver one verified continue message to the original task without UI automation or a second App Server.",
+    "developerName": "Shadow-Alex",
+    "category": "Productivity",
+    "capabilities": [
+      "Durable read-only monitoring",
+      "Desktop-owned same-task delivery"
+    ],
+    "websiteURL": "https://github.com/Shadow-Alex/sleepy-agent",
+    "screenshots": [
+      "./assets/sleepy-agent-demo.png",
+      "./assets/codex-continue-delivery.png"
+    ],
+    "defaultPrompt": [
+      "Register a durable wait for this task when work is blocked only on waiting."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
