@@ -16,6 +16,7 @@ from durable_continue.delivery_evidence import (
 )
 
 THREAD_ID = "019f0000-0000-7000-8000-000000000004"
+OTHER_THREAD_ID = "019f0000-0000-7000-8000-000000000005"
 
 
 def user_continue(turn_id: str = "turn_123", text: str = "continue") -> str:
@@ -41,6 +42,41 @@ def turn_record(turn_id: str) -> str:
             "payload": {
                 "type": "task_complete",
                 "turn_id": turn_id,
+            },
+        }
+    )
+
+
+def delegation_output(
+    source_thread_id: str = THREAD_ID, text: str = "continue"
+) -> str:
+    return (
+        "<codex_delegation>\n"
+        f"  <source_thread_id>{source_thread_id}</source_thread_id>\n"
+        f"  <input>{text}</input>\n"
+        "</codex_delegation>"
+    )
+
+
+def delegated_continue_record(
+    *,
+    source_thread_id: str = THREAD_ID,
+    text: str = "continue",
+    name: str = "send_message_to_thread",
+    namespace: str = "codex_app",
+    turn_id: str = "turn_delegated",
+) -> str:
+    return json.dumps(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "name": name,
+                "namespace": namespace,
+                "output": delegation_output(source_thread_id, text),
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": turn_id
+                },
             },
         }
     )
@@ -140,6 +176,37 @@ def test_event_record_can_confirm_turn(tmp_path: Path) -> None:
     )
     observed = find_continue_after(RolloutAnchor(path, 0))
     assert observed is not None and observed.turn_id == "turn_event"
+
+
+def test_desktop_delegation_output_can_confirm_ambiguous_send(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / f"rollout-{THREAD_ID}.jsonl"
+    path.write_text(delegated_continue_record() + "\n", encoding="utf-8")
+
+    observed = find_continue_after(RolloutAnchor(path, 0))
+
+    assert observed is not None
+    assert observed.turn_id == "turn_delegated"
+    assert observed.source == "response_item_delegation"
+
+
+@pytest.mark.parametrize(
+    ("record",),
+    [
+        (delegated_continue_record(source_thread_id=OTHER_THREAD_ID),),
+        (delegated_continue_record(text="continue please"),),
+        (delegated_continue_record(name="other_tool"),),
+        (delegated_continue_record(namespace="other_namespace"),),
+    ],
+)
+def test_delegation_evidence_rejects_non_exact_tool_output(
+    tmp_path: Path, record: str
+) -> None:
+    path = tmp_path / f"rollout-{THREAD_ID}.jsonl"
+    path.write_text(record + "\n", encoding="utf-8")
+
+    assert find_continue_after(RolloutAnchor(path, 0)) is None
 
 
 def test_anchor_outside_codex_home_is_rejected(tmp_path: Path) -> None:

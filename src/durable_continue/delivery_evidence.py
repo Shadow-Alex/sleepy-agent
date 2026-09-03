@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,17 @@ VISIBLE_MESSAGE = "continue"
 _MAX_ROLLOUT_SCAN_BYTES = 64 * 1024 * 1024
 _MAX_ROLLOUT_LINE_BYTES = 16 * 1024 * 1024
 _CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
+_THREAD_ID_TEXT = (
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+_ROLLOUT_THREAD_ID = re.compile(rf"(?P<thread_id>{_THREAD_ID_TEXT})\.jsonl\Z")
+_DELEGATION_OUTPUT = re.compile(
+    rf"\A<codex_delegation>\r?\n"
+    rf"[ \t]*<source_thread_id>(?P<thread_id>{_THREAD_ID_TEXT})"
+    rf"</source_thread_id>\r?\n"
+    rf"[ \t]*<input>{VISIBLE_MESSAGE}</input>\r?\n"
+    rf"</codex_delegation>(?:\r?\n)?\Z"
+)
 
 
 class DeliveryEvidenceError(RuntimeError):
@@ -119,6 +131,7 @@ def validate_rollout_anchor(
 
 
 def find_continue_after(anchor: RolloutAnchor) -> ObservedContinue | None:
+    expected_thread_id = _rollout_thread_id(anchor.path)
     try:
         size = anchor.path.stat().st_size
         if size < anchor.offset:
@@ -141,7 +154,9 @@ def find_continue_after(anchor: RolloutAnchor) -> ObservedContinue | None:
                         stage="verify_rollout",
                         category="rollout_unreadable",
                     )
-                observed = _observed_continue(_decode_record(line))
+                observed = _observed_continue(
+                    _decode_record(line), expected_thread_id
+                )
                 if observed is not None:
                     return observed
     except DeliveryEvidenceError:
@@ -237,20 +252,30 @@ def _decode_record(line: bytes) -> object:
         return None
 
 
-def _observed_continue(record: object) -> ObservedContinue | None:
+def _observed_continue(
+    record: object, expected_thread_id: str | None
+) -> ObservedContinue | None:
     if not isinstance(record, dict):
         return None
     if record.get("type") == "response_item":
         payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return None
         if (
-            isinstance(payload, dict)
-            and payload.get("type") == "message"
+            payload.get("type") == "message"
             and payload.get("role") == "user"
             and _exact_continue_content(payload.get("content"))
         ):
             turn_id = _response_turn_id(payload)
             if turn_id:
                 return ObservedContinue(turn_id, "response_item")
+        if (
+            payload.get("type") == "function_call_output"
+            and _exact_delegated_continue(payload, expected_thread_id)
+        ):
+            turn_id = _response_turn_id(payload)
+            if turn_id:
+                return ObservedContinue(turn_id, "response_item_delegation")
 
     if record.get("type") == "event_msg":
         payload = record.get("payload")
@@ -260,14 +285,42 @@ def _observed_continue(record: object) -> ObservedContinue | None:
         if not isinstance(item, dict):
             return None
         item_type = str(item.get("type") or "").replace("_", "").casefold()
-        if item_type != "usermessage" or not _exact_continue_content(
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            return None
+        if item_type == "usermessage" and _exact_continue_content(
             item.get("content")
         ):
-            return None
-        turn_id = payload.get("turn_id")
-        if isinstance(turn_id, str) and turn_id:
             return ObservedContinue(turn_id, "event_msg")
+        if item_type == "functioncalloutput" and _exact_delegated_continue(
+            item, expected_thread_id
+        ):
+            return ObservedContinue(turn_id, "event_msg_delegation")
     return None
+
+
+def _rollout_thread_id(path: Path) -> str | None:
+    match = _ROLLOUT_THREAD_ID.search(path.name.casefold())
+    return match.group("thread_id") if match else None
+
+
+def _exact_delegated_continue(
+    payload: dict[str, object], expected_thread_id: str | None
+) -> bool:
+    if (
+        expected_thread_id is None
+        or payload.get("name") != "send_message_to_thread"
+        or payload.get("namespace") != "codex_app"
+    ):
+        return False
+    output = payload.get("output")
+    if not isinstance(output, str) or len(output) > 512:
+        return False
+    match = _DELEGATION_OUTPUT.fullmatch(output)
+    return bool(
+        match
+        and match.group("thread_id").casefold() == expected_thread_id.casefold()
+    )
 
 
 def _record_turn_id(record: object) -> str | None:

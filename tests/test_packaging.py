@@ -54,7 +54,7 @@ def test_public_names_and_versions_are_consistent() -> None:
         (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     assert manifest["name"] == "sleepy-agent"
-    assert manifest["version"] == "0.4.0"
+    assert manifest["version"] == "0.4.1"
     assert manifest["mcpServers"] == "./.mcp.json"
 
     skill = (ROOT / "skills/sleepy-agent/SKILL.md").read_text(encoding="utf-8")

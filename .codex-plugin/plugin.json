@@ -1,6 +1,6 @@
 {
   "name": "sleepy-agent",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Durable same-task continuation through Codex Desktop's own App Server",
   "author": {
     "name": "Shadow-Alex",

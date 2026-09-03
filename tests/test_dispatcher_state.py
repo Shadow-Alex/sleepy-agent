@@ -82,6 +82,35 @@ def append_continue(path: Path, turn_id: str = "turn_delivered") -> None:
         )
 
 
+def append_delegated_continue(
+    path: Path, turn_id: str = "turn_delegated"
+) -> None:
+    output = (
+        "<codex_delegation>\n"
+        f"  <source_thread_id>{THREAD_ID}</source_thread_id>\n"
+        "  <input>continue</input>\n"
+        "</codex_delegation>"
+    )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "name": "send_message_to_thread",
+                        "namespace": "codex_app",
+                        "output": output,
+                        "internal_chat_message_metadata_passthrough": {
+                            "turn_id": turn_id
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+
+
 def test_claim_anchors_before_native_send_and_observe_completes(
     tmp_path: Path,
 ) -> None:
@@ -148,6 +177,42 @@ def test_retry_adopts_message_after_persisted_anchor_without_resend(
     assert current is not None
     assert current["state"] == DELIVERED
     assert current["started_turn_id"] == "turn_recovered"
+
+
+def test_retry_adopts_desktop_delegation_after_ambiguous_native_error(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path / "state.sqlite3")
+    codex_home = tmp_path / "codex"
+    path = rollout(codex_home)
+    monitor = pending_monitor(store, codex_home)
+    first = claim_dispatch(store)
+    assert first is not None
+    assert record_dispatch_failure(
+        store,
+        first.monitor_id,
+        first.claim_token,
+        error="Codex app tool request failed",
+        retryable=True,
+        reason="native_pipe_error",
+        retry_seconds=60,
+        max_delivery_attempts=12,
+        max_retry_seconds=3600,
+    )
+    append_delegated_continue(path)
+    with store.immediate() as conn:
+        conn.execute(
+            "UPDATE monitors SET next_delivery_at = 0 WHERE id = ?", (monitor["id"],)
+        )
+
+    assert claim_dispatch(store) is None
+    current = store.get(monitor["id"])
+    assert current is not None
+    assert current["state"] == DELIVERED
+    assert current["started_turn_id"] == "turn_delegated"
+    assert current["last_delivery_stdout_tail"] == (
+        "verified exact continue via response_item_delegation"
+    )
 
 
 def test_only_one_desktop_dispatch_claim_exists_globally(tmp_path: Path) -> None:

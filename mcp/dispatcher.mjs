@@ -5,7 +5,7 @@ import path from "node:path";
 import { NativePipeClient } from "./native_pipe_client.mjs";
 
 const BACKEND = "codex_desktop_native_pipe";
-const SERVER_VERSION = "0.4.0";
+const SERVER_VERSION = "0.4.1";
 const MAX_STDIO_MESSAGE_BYTES = 8 * 1024 * 1024;
 const DISPATCH_INTERVAL_MS = 2_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
